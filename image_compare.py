@@ -250,11 +250,23 @@ class ImageCompare(QMainWindow):
             QMessageBox.warning(self, "提示", "请先选择两张图片！")
             return
 
-        out_dir = QFileDialog.getExistingDirectory(self, "选择 GIF 保存目录", "")
-        if not out_dir:
-            return
-
-        self.output_dir = out_dir
+        # 已有保存路径则复用，无需重复选择；用户也可点击"更换"
+        if self.output_dir and os.path.isdir(self.output_dir):
+            ret = QMessageBox.question(
+                self, "保存路径",
+                f"继续保存到:\n{self.output_dir}\n\n点击「Yes」直接保存，「No」重新选择目录",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            )
+            if ret == QMessageBox.StandardButton.No:
+                out_dir = QFileDialog.getExistingDirectory(self, "选择 GIF 保存目录", self.output_dir)
+                if not out_dir:
+                    return
+                self.output_dir = out_dir
+        else:
+            out_dir = QFileDialog.getExistingDirectory(self, "选择 GIF 保存目录", "")
+            if not out_dir:
+                return
+            self.output_dir = out_dir
         freq = self.spin_freq.value()
         count = self.spin_count.value()
         duration_ms = int(freq * 1000)
@@ -279,11 +291,24 @@ class ImageCompare(QMainWindow):
             img1 = resize_pad(img1, max_w, max_h)
             img2 = resize_pad(img2, max_w, max_h)
 
-            # 构建帧序列
+            # 将两张图拼合，生成全局最优 256 色调色板（避免红色等颜色丢失）
+            rgb1 = img1.convert("RGB")
+            rgb2 = img2.convert("RGB")
+            combined = Image.new("RGB",
+                                 (rgb1.width + rgb2.width, max(rgb1.height, rgb2.height)))
+            combined.paste(rgb1, (0, 0))
+            combined.paste(rgb2, (rgb1.width, 0))
+            global_palette = combined.quantize(colors=256, method=Image.Quantize.MEDIANCUT)
+
+            # 构建帧序列 —— 每帧使用统一调色板
             frames = []
             for _ in range(count):
-                frames.append(img1.copy().convert("RGB"))
-                frames.append(img2.copy().convert("RGB"))
+                f1 = rgb1.copy().quantize(
+                    palette=global_palette, dither=Image.Dither.FLOYDSTEINBERG)
+                f2 = rgb2.copy().quantize(
+                    palette=global_palette, dither=Image.Dither.FLOYDSTEINBERG)
+                frames.append(f1)
+                frames.append(f2)
 
             out_path = os.path.join(out_dir, "compare.gif")
             frames[0].save(
