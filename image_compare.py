@@ -1,18 +1,50 @@
+这是修改后的完整代码。
+
+主要改动点：
+
+引入了 imageio 和 numpy 库：这两个库配合使用，在生成 GIF 时对颜色的量化处理通常比 PIL 原生更好，能减少颜色断层。
+
+重写了 _save_gif 方法：现在将处理好的图片转换为 numpy 数组，并交给 imageio.mimsave 生成 GIF。
+
+运行前准备
+
+请确保安装了以下库：
+
+code
+Bash
+download
+content_copy
+expand_less
+pip install PyQt6 pillow imageio numpy
+完整代码
+code
+Python
+download
+content_copy
+expand_less
 #!/usr/bin/env python3
 """
-图片对比工具 - 交替显示两张图片并支持导出 GIF
+图片对比工具 - 交替显示两张图片并支持导出 GIF (Imageio版)
 """
 
 import sys
 import os
 from pathlib import Path
 
+# ─── 新增依赖库 ───
+try:
+    import imageio
+    import numpy as np
+except ImportError:
+    print("错误: 缺少必要库，请运行: pip install imageio numpy")
+    sys.exit(1)
+
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QFileDialog, QSpinBox, QDoubleSpinBox,
     QGroupBox, QSizePolicy, QMessageBox
 )
-from PyQt6.QtGui import QPixmap, QImage
+from PyQt6.QtGui import QPixmap
 from PyQt6.QtCore import Qt, QTimer
 from PIL import Image
 
@@ -20,7 +52,7 @@ from PIL import Image
 class ImageCompare(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("图片对比工具")
+        self.setWindowTitle("图片对比工具 (Imageio优化版)")
         self.setMinimumSize(900, 700)
 
         # 状态变量
@@ -28,8 +60,8 @@ class ImageCompare(QMainWindow):
         self.image2_path = None
         self.pixmap1 = None
         self.pixmap2 = None
-        self.current_showing = 1  # 当前显示的图片编号
-        self.remaining_toggles = 0  # 剩余交替次数
+        self.current_showing = 1
+        self.remaining_toggles = 0
         self.is_running = False
         self.output_dir = None
 
@@ -181,7 +213,6 @@ class ImageCompare(QMainWindow):
             self.label_img2.setText(Path(path).name)
             self.label_img2.setStyleSheet("color: #333;")
 
-        # 如果没有在运行中，显示刚选的图片
         if not self.is_running:
             self._show_pixmap(pixmap, which)
 
@@ -209,7 +240,7 @@ class ImageCompare(QMainWindow):
             return
 
         self.is_running = True
-        self.remaining_toggles = self.spin_count.value() * 2  # 每次交替算两次切换
+        self.remaining_toggles = self.spin_count.value() * 2
         self.current_showing = 1
         self._show_pixmap(self.pixmap1, 1)
 
@@ -244,13 +275,13 @@ class ImageCompare(QMainWindow):
         self.btn_stop.setEnabled(False)
         self.status.setText("对比已停止")
 
-    # ────────────────── 保存 GIF ──────────────────
+    # ────────────────── 保存 GIF (Imageio版) ──────────────────
     def _save_gif(self):
         if self.image1_path is None or self.image2_path is None:
             QMessageBox.warning(self, "提示", "请先选择两张图片！")
             return
 
-        # 已有保存路径则复用，无需重复选择；用户也可点击"更换"
+        # 路径选择逻辑
         if self.output_dir and os.path.isdir(self.output_dir):
             ret = QMessageBox.question(
                 self, "保存路径",
@@ -259,65 +290,63 @@ class ImageCompare(QMainWindow):
             )
             if ret == QMessageBox.StandardButton.No:
                 out_dir = QFileDialog.getExistingDirectory(self, "选择 GIF 保存目录", self.output_dir)
-                if not out_dir:
-                    return
+                if not out_dir: return
                 self.output_dir = out_dir
         else:
             out_dir = QFileDialog.getExistingDirectory(self, "选择 GIF 保存目录", "")
-            if not out_dir:
-                return
+            if not out_dir: return
             self.output_dir = out_dir
+
+        # 获取参数
         freq = self.spin_freq.value()
         count = self.spin_count.value()
-        duration_ms = int(freq * 1000)
-
+        
         try:
+            # 1. 使用 PIL 读取并预处理图片（尺寸统一、白色背景）
+            # 转为 RGBA 以处理透明度，防止粘贴黑底
             img1 = Image.open(self.image1_path).convert("RGBA")
             img2 = Image.open(self.image2_path).convert("RGBA")
 
-            # 统一尺寸 —— 以较大的边为准
+            # 计算最大画布尺寸
             max_w = max(img1.width, img2.width)
             max_h = max(img1.height, img2.height)
 
             def resize_pad(img, w, h):
-                """等比缩放并居中贴到指定大小画布上"""
-                img.thumbnail((w, h), Image.Resampling.LANCZOS)
-                canvas = Image.new("RGBA", (w, h), (255, 255, 255, 255))
-                x = (w - img.width) // 2
-                y = (h - img.height) // 2
-                canvas.paste(img, (x, y))
+                """缩放并居中贴在白底上，防止透明图变黑"""
+                # 创建缩略图
+                img_copy = img.copy()
+                img_copy.thumbnail((w, h), Image.Resampling.LANCZOS)
+                
+                # 创建白色底板 (GIF不支持半透明，RGB模式比较安全)
+                canvas = Image.new("RGB", (w, h), (255, 255, 255))
+                
+                # 计算居中位置
+                x = (w - img_copy.width) // 2
+                y = (h - img_copy.height) // 2
+                
+                # 粘贴（使用 alpha 通道作为 mask）
+                canvas.paste(img_copy, (x, y), mask=img_copy)
                 return canvas
 
-            img1 = resize_pad(img1, max_w, max_h)
-            img2 = resize_pad(img2, max_w, max_h)
+            img1_processed = resize_pad(img1, max_w, max_h)
+            img2_processed = resize_pad(img2, max_w, max_h)
 
-            # 将两张图拼合，生成全局最优 256 色调色板（避免红色等颜色丢失）
-            rgb1 = img1.convert("RGB")
-            rgb2 = img2.convert("RGB")
-            combined = Image.new("RGB",
-                                 (rgb1.width + rgb2.width, max(rgb1.height, rgb2.height)))
-            combined.paste(rgb1, (0, 0))
-            combined.paste(rgb2, (rgb1.width, 0))
-            global_palette = combined.quantize(colors=256, method=Image.Quantize.MEDIANCUT)
+            # 2. 转换为 numpy 数组供 imageio 使用
+            frame1 = np.array(img1_processed)
+            frame2 = np.array(img2_processed)
 
-            # 构建帧序列 —— 每帧使用统一调色板
+            # 3. 构建帧列表
             frames = []
             for _ in range(count):
-                f1 = rgb1.copy().quantize(
-                    palette=global_palette, dither=Image.Dither.FLOYDSTEINBERG)
-                f2 = rgb2.copy().quantize(
-                    palette=global_palette, dither=Image.Dither.FLOYDSTEINBERG)
-                frames.append(f1)
-                frames.append(f2)
+                frames.append(frame1)
+                frames.append(frame2)
 
-            out_path = os.path.join(out_dir, "compare.gif")
-            frames[0].save(
-                out_path,
-                save_all=True,
-                append_images=frames[1:],
-                duration=duration_ms,
-                loop=0,
-            )
+            # 4. 使用 imageio 保存 GIF
+            out_path = os.path.join(self.output_dir, "compare.gif")
+            
+            # loop=0 表示无限循环
+            # duration 是每一帧的持续时间(秒)
+            imageio.mimsave(out_path, frames, duration=freq, loop=0)
 
             QMessageBox.information(self, "成功", f"GIF 已保存到:\n{out_path}")
             self.status.setText(f"GIF 已保存: {out_path}")
@@ -325,7 +354,7 @@ class ImageCompare(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "错误", f"保存 GIF 时出错:\n{e}")
 
-    # ────────────────── 窗口缩放时刷新预览 ──────────────────
+    # ────────────────── 窗口缩放事件 ──────────────────
     def resizeEvent(self, event):
         super().resizeEvent(event)
         if self.is_running:
@@ -346,4 +375,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
