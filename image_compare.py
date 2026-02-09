@@ -1,27 +1,3 @@
-这是修改后的完整代码。
-
-主要改动点：
-
-引入了 imageio 和 numpy 库：这两个库配合使用，在生成 GIF 时对颜色的量化处理通常比 PIL 原生更好，能减少颜色断层。
-
-重写了 _save_gif 方法：现在将处理好的图片转换为 numpy 数组，并交给 imageio.mimsave 生成 GIF。
-
-运行前准备
-
-请确保安装了以下库：
-
-code
-Bash
-download
-content_copy
-expand_less
-pip install PyQt6 pillow imageio numpy
-完整代码
-code
-Python
-download
-content_copy
-expand_less
 #!/usr/bin/env python3
 """
 图片对比工具 - 交替显示两张图片并支持导出 GIF (Imageio版)
@@ -30,14 +6,6 @@ expand_less
 import sys
 import os
 from pathlib import Path
-
-# ─── 新增依赖库 ───
-try:
-    import imageio
-    import numpy as np
-except ImportError:
-    print("错误: 缺少必要库，请运行: pip install imageio numpy")
-    sys.exit(1)
 
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -331,22 +299,32 @@ class ImageCompare(QMainWindow):
             img1_processed = resize_pad(img1, max_w, max_h)
             img2_processed = resize_pad(img2, max_w, max_h)
 
-            # 2. 转换为 numpy 数组供 imageio 使用
-            frame1 = np.array(img1_processed)
-            frame2 = np.array(img2_processed)
+            # 2. 合并两张图片生成共享最优调色板 (GIF 只支持 256 色)
+            combined = Image.new("RGB", (max_w, max_h * 2))
+            combined.paste(img1_processed, (0, 0))
+            combined.paste(img2_processed, (0, max_h))
+            palette_img = combined.quantize(colors=256, method=Image.Quantize.MEDIANCUT)
 
-            # 3. 构建帧列表
-            frames = []
+            # 3. 用共享调色板量化每帧，启用 Floyd-Steinberg 抖动减少色带
+            img1_q = img1_processed.quantize(palette=palette_img, dither=Image.Dither.FLOYDSTEINBERG)
+            img2_q = img2_processed.quantize(palette=palette_img, dither=Image.Dither.FLOYDSTEINBERG)
+
+            # 4. 构建帧列表
+            frames_pil = []
             for _ in range(count):
-                frames.append(frame1)
-                frames.append(frame2)
+                frames_pil.append(img1_q.copy())
+                frames_pil.append(img2_q.copy())
 
-            # 4. 使用 imageio 保存 GIF
+            # 5. 使用 PIL 保存 GIF (颜色保留效果优于 imageio)
             out_path = os.path.join(self.output_dir, "compare.gif")
-            
-            # loop=0 表示无限循环
-            # duration 是每一帧的持续时间(秒)
-            imageio.mimsave(out_path, frames, duration=freq, loop=0)
+            duration_ms = int(freq * 1000)
+            frames_pil[0].save(
+                out_path,
+                save_all=True,
+                append_images=frames_pil[1:],
+                duration=duration_ms,
+                loop=0,
+            )
 
             QMessageBox.information(self, "成功", f"GIF 已保存到:\n{out_path}")
             self.status.setText(f"GIF 已保存: {out_path}")
